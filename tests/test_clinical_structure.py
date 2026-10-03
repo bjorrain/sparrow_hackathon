@@ -137,6 +137,54 @@ class ClinicalStructureParserTests(unittest.TestCase):
             {"щитовидная_железа": {"объем": "10 мл"}},
         )
 
+    def test_structures_prostate_report_zones_and_adjacent_organs(self) -> None:
+        result, clinical_text = self.parser.parse_with_clinical_text(
+            "Описание\n"
+            "ПРЕДСТАТЕЛЬНАЯ ЖЕЛЕЗА, ТРУЗИ\n"
+            "Форма: обычная\n"
+            "Контуры: ровные, четкие\n"
+            "Структура:\n"
+            "- В переходных зонах и области периуретральных желез – "
+            "диффузно неоднородная с участками краевого фиброза и "
+            "микрокальцинатами, не увеличена, мелкая протоковая система "
+            "не расширена\n"
+            "В центральных зонах – однородная\n"
+            "В периферических зонах – однородная\n"
+            "Эхогенность предстательной железы – средняя\n"
+            "Размеры – 45х35х24 мм\n"
+            "Объем – 19,8 см3 (норма до 25 см3)\n"
+            "Простатическая часть уретры – не деформирована\n"
+            "Уретральный канал и шейка мочевого пузыря не деформированы\n"
+            "Семенные пузырьки: поперечник 10 мм, однородные, "
+            "гипоэхогенные, стенки не утолщены\n"
+            "Перипростатические вены не расширены, умеренно извиты"
+        )
+
+        prostate = result["структуры"]["предстательная_железа"]
+        self.assertEqual(
+            result["служебная_информация"]["тип_исследования"], "ТРУЗИ"
+        )
+        self.assertEqual(prostate["размеры"], "45х35х24 мм")
+        self.assertEqual(
+            prostate["объем"],
+            {"значение": "19,8 см3", "референс": "норма до 25 см3"},
+        )
+        self.assertEqual(len(prostate["структура"]), 3)
+        self.assertEqual(
+            prostate["семенные_пузырьки"]["поперечник"], "10 мм"
+        )
+        self.assertEqual(
+            prostate["семенные_пузырьки"]["стенки"], "не утолщены"
+        )
+        self.assertEqual(
+            prostate["простатическая_часть_уретры"]["состояние"],
+            "не деформирована",
+        )
+        self.assertNotIn("Структура", clinical_text)
+        self.assertNotIn("10 мм", clinical_text)
+        self.assertIn("не увеличена", clinical_text)
+        self.assertIn("умеренно извиты", clinical_text)
+
     def test_extracts_service_fields_without_misclassifying_free_findings(self) -> None:
         result = self.parser.parse(
             "Описание\n"

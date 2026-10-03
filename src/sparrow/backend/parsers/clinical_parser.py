@@ -73,6 +73,11 @@ _STATUS_TERMS: dict[FindingStatus, tuple[str, ...]] = {
     ),
     "норма": (
         "нормальный",
+        "обычный",
+        "ровный",
+        "четкий",
+        "однородный",
+        "средний",
         "в норме",
         "в пределах нормы",
         "предел нормы",
@@ -109,7 +114,9 @@ _DEFAULT_URGENCY_TERMS: dict[Urgency, tuple[str, ...]] = {
     "норма": (),
 }
 
-_CLAUSE_SEPARATOR = re.compile(r";+|\n+|(?<=[.!?])\s+|,\s+(?=[А-Яа-яЁё])")
+_CLAUSE_SEPARATOR = re.compile(
+    r";+|\n+|(?<=[.!?])\s+|(?<!\d),\s*|,\s*(?!\d)"
+)
 _SIDE_LABEL = re.compile(
     r"^(?:справа|слева|правый|правая|правое|левый|левая|левое)\s*:?\s*$",
     re.IGNORECASE,

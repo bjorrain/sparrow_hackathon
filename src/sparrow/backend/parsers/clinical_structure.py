@@ -8,8 +8,39 @@ from yargy import Parser
 from yargy.pipelines import morph_pipeline
 
 _SPACE = re.compile(r"\s+")
-_FIELD = re.compile(r"^([^:]{1,80}):\s*(.*)$")
+_FIELD = re.compile(r"^([^:–—-]{1,80}?)\s*(?::|[–—-])\s*(.*)$")
+_PROSTATE_ANCHOR = re.compile(
+    r"\b(?:предстательн\w*\s+желез\w*|простатическ\w*\s+желез\w*)\b",
+    re.IGNORECASE,
+)
+_PROSTATE_TITLE = re.compile(
+    r"^\s*предстательн\w*\s+желез\w*\s*[,—-]\s*(.+?)\s*$",
+    re.IGNORECASE,
+)
+_PROSTATE_ENTITY_LINES = (
+    (
+        re.compile(r"^простатическая\s+часть\s+уретры\s*[–—-]\s*(.*)$", re.I),
+        "простатическая_часть_уретры",
+    ),
+    (
+        re.compile(r"^уретральный\s+канал\s+и\s+шейка\s+мочевого\s+пузыря\s*(.*)$", re.I),
+        "уретральный_канал_и_шейка_мочевого_пузыря",
+    ),
+    (
+        re.compile(r"^семенные\s+пузырьки\s*:\s*(.*)$", re.I),
+        "семенные_пузырьки",
+    ),
+    (
+        re.compile(r"^перипростатические\s+вены\s*(.*)$", re.I),
+        "перипростатические_вены",
+    ),
+)
 _SIDE_HEADING = re.compile(r"^(справа|слева)\s*:\s*$", re.IGNORECASE)
+_INDEPENDENT_FINDING = re.compile(
+    r"^(?:в\s+(?:позадиматочном|дугласовом)\s+пространстве|"
+    r"свободная\s+жидкость)\b",
+    re.IGNORECASE,
+)
 _VESSEL_MEASUREMENT = re.compile(
     r"^\s*(?P<metric>Vps|Vpd|Vmean|RI|PI)\s*[–—-]?\s*"
     r"(?P<value>\d+(?:[.,]\d+)?)\s*"
@@ -114,6 +145,10 @@ _FIELD_LABELS = {
     "состояние",
     "просвет",
     "стенки",
+    "форма",
+    "структура",
+    "эхогенность предстательной железы",
+    "при цдк",
 }
 _SERVICE_LABELS = {
     "оборудование": "оборудование",
@@ -145,7 +180,7 @@ _VESSEL_PARSER = Parser(
 
 
 def _clean(value: str) -> str:
-    return _SPACE.sub(" ", value).strip(" \t;.")
+    return _SPACE.sub(" ", value).strip(" \t.,;:–—-")
 
 
 def _key(value: str) -> str:
@@ -158,7 +193,7 @@ def _key(value: str) -> str:
     return _KEYWORD_LABELS.get(normalized, normalized) or "прочее"
 
 
-def _add_value(target: dict[str, object], key: str, value: str) -> None:
+def _add_value(target: dict[str, object], key: str, value: object) -> None:
     current = target.get(key)
     if current is None:
         target[key] = value
@@ -214,18 +249,35 @@ class ClinicalStructureParser:
             _DESCRIPTION_HEADING.fullmatch(_clean(line))
             for line in text.splitlines()
         )
+        inferred_primary = (
+            "предстательная_железа"
+            if _PROSTATE_ANCHOR.search(text)
+            else None
+        )
         current_structure: dict[str, object] | None = None
+        pending_property: str | None = None
         current_side: dict[str, object] | None = None
         clinical_fragments: list[str] = []
         section = "preamble" if has_description_heading else "description"
         for raw_line in text.splitlines():
+            if re.fullmatch(r"\s*структура\s*:\s*", raw_line, re.IGNORECASE):
+                if current_structure is not None:
+                    current_structure.setdefault("структура", [])
+                    pending_property = "структура"
+                continue
             line = _clean(raw_line)
             if not line:
-                if section == "description" and current_side is None:
-                    current_structure = None
+                continue
+            prostate_title = _PROSTATE_TITLE.match(line)
+            if prostate_title:
+                metadata["тип_исследования"] = _clean(prostate_title.group(1))
+                if inferred_primary:
+                    current_structure = structures.setdefault(inferred_primary, {})
                 continue
             if _DESCRIPTION_HEADING.fullmatch(line):
                 section = "description"
+                if inferred_primary:
+                    current_structure = structures.setdefault(inferred_primary, {})
                 continue
             if _CONCLUSION_HEADING.match(line):
                 match = _CONCLUSION_HEADING.match(line)
@@ -269,12 +321,19 @@ class ClinicalStructureParser:
                 if generic_metadata:
                     _add_value(metadata, *generic_metadata)
                 continue
-            side_heading = _SIDE_HEADING.fullmatch(line)
+            side_heading = _SIDE_HEADING.fullmatch(raw_line.strip())
             if side_heading:
                 side_name = side_heading.group(1).casefold()
                 current_side = sides.setdefault(side_name, {})
                 assert isinstance(current_side, dict)
                 current_structure = None
+                pending_property = None
+                continue
+
+            if _is_section_heading(raw_line):
+                structure_name = _key(line.rstrip(":"))
+                current_structure = structures.setdefault(structure_name, {})
+                assert isinstance(current_structure, dict)
                 continue
 
             if current_side is not None:
@@ -286,10 +345,9 @@ class ClinicalStructureParser:
                     clinical_fragments.append(line)
                 continue
 
-            if _is_section_heading(line):
-                structure_name = _key(line.rstrip(":"))
-                current_structure = structures.setdefault(structure_name, {})
-                assert isinstance(current_structure, dict)
+            if _INDEPENDENT_FINDING.match(line):
+                other_findings.append(line)
+                clinical_fragments.append(line)
                 continue
 
             if section != "preamble" and current_structure is None:
@@ -302,6 +360,20 @@ class ClinicalStructureParser:
                 other_findings.append(line)
                 clinical_fragments.append(line)
                 continue
+
+            if self._is_empty_label(line, "структура"):
+                current_structure.setdefault("структура", [])
+                pending_property = "структура"
+                continue
+            if pending_property and not self._starts_new_structure_field(line):
+                self._append_list(
+                    current_structure,
+                    pending_property,
+                    line.lstrip("-• ").rstrip(";"),
+                )
+                clinical_fragments.append(line.lstrip("-• ").rstrip(";"))
+                continue
+            pending_property = None
 
             clinical_fragment = self._parse_structure_line(current_structure, line)
             if clinical_fragment:
@@ -337,38 +409,184 @@ class ClinicalStructureParser:
     def _parse_structure_line(
         self, structure: dict[str, object], line: str
     ) -> str | None:
+        for pattern, structure_name in _PROSTATE_ENTITY_LINES:
+            match = pattern.match(line)
+            if match:
+                nested = structure.setdefault(structure_name, {})
+                assert isinstance(nested, dict)
+                remainder = _clean(match.group(1))
+                if remainder:
+                    findings = self._record_entity_text(nested, remainder)
+                    return "\n".join(findings) or None
+                return None
+
         field = _FIELD.match(line)
-        if (
-            field
-            and len(field.group(1).split()) <= 6
-            and not re.search(r"[.!?]", field.group(1))
-        ):
+        if field and len(field.group(1).split()) <= 6:
             label = _key(field.group(1))
             value = _clean(field.group(2))
+            if _clean(field.group(1)).casefold().startswith("при исследовании "):
+                self._append_list(structure, "наблюдения", line)
+                return line
+            if label == "эхогенность_предстательной_железы":
+                label = "эхогенность"
+            if label == "при_цдк":
+                label = "васкуляризация"
+            if label in {"семенные_пузырьки", "семенной_пузырек"}:
+                nested = structure.setdefault("семенные_пузырьки", {})
+                assert isinstance(nested, dict)
+                self._record_entity_text(nested, value)
+                return value
+            if label in {"уретральный_канал_и_шейка_мочевого_пузыря"}:
+                nested = structure.setdefault(
+                    "уретральный_канал_и_шейка_мочевого_пузыря", {}
+                )
+                assert isinstance(nested, dict)
+                self._record_entity_text(nested, value)
+                return value
             if value:
+                if label == "структура":
+                    if self._is_positive_formation(value):
+                        self._append_list(structure, "образования", value)
+                        return value
+                    self._append_list(structure, label, value)
+                    return value
                 if label == "образование":
                     self._append_list(structure, "образования", value)
                     return value
-                else:
-                    _add_value(structure, label, value)
+                if label == "объем":
+                    value = self._parse_measurement_value(value)
+                    structure[label] = value
+                    return None
+                if label == "эхогенность_предстательной_железы":
+                    label = "эхогенность"
+                _add_value(structure, label, value)
                 if self._is_positive_formation(value):
                     self._append_list(structure, "образования", value)
                     return value
+                if label == "васкуляризация" or self._is_clinical_statement(value):
+                    return value
                 return None
+            if label == "структура":
+                structure.setdefault(label, [])
+            return None
 
         property_match = _PROPERTY_PREFIX.match(line)
         if property_match:
             label = _key(property_match.group("label"))
             value = _clean(property_match.group("value"))
+            if label == "объем":
+                value = self._parse_measurement_value(value)
             _add_value(structure, label, value)
             return None
+
+        measurement = re.match(
+            r"^(размеры|размер|объем|объём)\s+(.+)$",
+            line,
+            re.IGNORECASE,
+        )
+        if measurement:
+            label = _key(measurement.group(1))
+            value = _clean(measurement.group(2))
+            if label == "объем":
+                value = self._parse_measurement_value(value)
+            _add_value(structure, label, value)
+            return None
+
+        if self._is_zone_description(line):
+            self._append_list(structure, "структура", line.lstrip("-• ").strip())
+            return line.lstrip("-• ").strip()
 
         if self._is_positive_formation(line):
             self._append_list(structure, "образования", line)
             return line
 
         self._append_list(structure, "наблюдения", line)
-        return line
+        return line if self._is_clinical_statement(line) else None
+
+    @staticmethod
+    def _is_zone_description(line: str) -> bool:
+        return bool(re.match(r"^[-•]?\s*в\s+.+?\s+зонах?\s*[–—-]", line, re.I))
+
+    def _record_entity_text(
+        self, entity: dict[str, object], text: str
+    ) -> list[str]:
+        clinical_findings = []
+        clauses = [part.strip() for part in re.split(r"[;,]", text) if part.strip()]
+        for clause in clauses:
+            field = re.match(
+                r"^(?P<label>поперечник|размеры|размер|объем|объём|"
+                r"стенки(?:\s+пузырьков)?|контуры|структура|эхоструктура)"
+                r"\s*[:–—-]?\s*"
+                r"(?P<value>.*)$",
+                clause,
+                re.IGNORECASE,
+            )
+            if field:
+                label = _key(field.group("label"))
+                if label.startswith("стенки"):
+                    label = "стенки"
+                value = _clean(field.group("value"))
+                _add_value(entity, label, value)
+                if self._is_clinical_statement(value):
+                    clinical_findings.append(value)
+            elif re.fullmatch(r"поперечник\s+\d[\d.,]*\s*(?:мм|см)", clause, re.I):
+                match = re.match(r"поперечник\s+(.+)", clause, re.I)
+                assert match is not None
+                _add_value(entity, "поперечник", _clean(match.group(1)))
+            elif re.search(r"\bне\s+деформирован\w*", clause, re.I):
+                _add_value(entity, "состояние", clause)
+                clinical_findings.append(clause)
+            elif clause:
+                self._append_list(entity, "наблюдения", clause)
+                if self._is_clinical_statement(clause):
+                    clinical_findings.append(clause)
+        return clinical_findings
+
+    @staticmethod
+    def _is_empty_label(line: str, label: str) -> bool:
+        match = _FIELD.match(line)
+        return bool(match and _key(match.group(1)) == label and not _clean(match.group(2)))
+
+    @staticmethod
+    def _starts_new_structure_field(line: str) -> bool:
+        if any(pattern.match(line) for pattern, _ in _PROSTATE_ENTITY_LINES):
+            return True
+        field = _FIELD.match(line)
+        if field and _key(field.group(1)) in _FIELD_LABELS:
+            return True
+        if _PROPERTY_PREFIX.match(line):
+            return True
+        return bool(
+            re.match(r"^(?:размеры|размер|объем|объём)\s+.+$", line, re.I)
+        )
+
+    @staticmethod
+    def _is_clinical_statement(text: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(?:не\s+\w+|без\s+\w+|фиброз\w*|микрокальцин\w*|"
+                r"кальцин\w*|кист\w*|узл\w*|стеноз\w*|извит\w*|"
+                r"неоднородн\w*)\b",
+                text,
+                re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _parse_measurement_value(value: str) -> str | dict[str, str]:
+        match = re.match(
+            r"^(?P<value>[\d.,]+\s*(?:мм|см3|см³|мл|см)?)(?:\s*\((?P<ref>.*)\))?$",
+            value,
+            re.IGNORECASE,
+        )
+        if not match:
+            return {"значение": value}
+        parsed_value = _clean(match.group("value"))
+        if match.group("ref"):
+            parsed = {"значение": parsed_value}
+            parsed["референс"] = _clean(match.group("ref"))
+            return parsed
+        return parsed_value
 
     @staticmethod
     def _parse_vessel_measurement(
