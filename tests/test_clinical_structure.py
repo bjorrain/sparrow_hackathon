@@ -185,6 +185,50 @@ class ClinicalStructureParserTests(unittest.TestCase):
         self.assertIn("не увеличена", clinical_text)
         self.assertIn("умеренно извиты", clinical_text)
 
+    def test_parses_multiline_technical_header_and_compound_measurements(self) -> None:
+        result = self.parser.parse(
+            "Ультразвуковая диагностическая система:\n"
+            "ACUSON Redwood, датчик конвексный 5С1, 1-5 МГц\n"
+            "ПЕЧЕНЬ:\n"
+            "Правая доля КВР: 142 мм, толщина 140 мм\n"
+            "Хвостатая доля - толщина: 10 мм\n"
+            "Холедох, диаметр: 3,4 мм\n"
+            "Холедох, расположение: в воротах печени\n"
+            "ЖЕЛЧНЫЙ ПУЗЫРЬ:\n"
+            "Образования: есть, пристеночное образование 3,5 мм\n"
+            "ПОДЖЕЛУДОЧНАЯ ЖЕЛЕЗА:\n"
+            "Головка: 16 мм, тело: 8 мм, хвост: 20 мм"
+        )
+
+        self.assertEqual(
+            result["служебная_информация"]["тип_оборудования"],
+            "Ультразвуковая диагностическая система",
+        )
+        self.assertIn(
+            "ACUSON Redwood",
+            result["служебная_информация"]["оборудование"],
+        )
+        self.assertEqual(
+            result["структуры"]["печень"]["правая_доля_квр"],
+            "142 мм",
+        )
+        self.assertEqual(
+            result["структуры"]["печень"]["холедох_диаметр"],
+            "3,4 мм",
+        )
+        self.assertEqual(
+            result["структуры"]["печень"]["холедох_расположение"],
+            "в воротах печени",
+        )
+        self.assertEqual(
+            result["структуры"]["желчный_пузырь"]["образования"],
+            ["есть, пристеночное образование 3,5 мм"],
+        )
+        self.assertEqual(
+            result["структуры"]["поджелудочная_железа"]["тело"],
+            "8 мм",
+        )
+
     def test_extracts_service_fields_without_misclassifying_free_findings(self) -> None:
         result = self.parser.parse(
             "Описание\n"

@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from sparrow.backend.parsers.clinical_parser import ClinicalDescriptionParser
 from sparrow.backend.parsers.clinical_structure import ClinicalStructureParser
+from sparrow.backend.parsers.frontend_schema import to_frontend_schema
 
-Status = Literal["норма", "изменение", "патология"]
-Urgency = Literal["норма", "планово", "срочно", "неотложно"]
+Status = Literal["норма", "подозрение", "патология"]
 
 
 class ExtractRequest(BaseModel):
@@ -28,30 +28,28 @@ class ExtractRequest(BaseModel):
         return value
 
 
-class FindingResponse(BaseModel):
+class StructureResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    summary: str
+    name: str
+    size: str
+    morphology: dict[str, Any]
     status: Status
-    urgency: Urgency
 
 
-class StructuredReportResponse(BaseModel):
+class ConclusionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    service_info: dict[str, Any] = Field(alias="служебная_информация")
-    structures: dict[str, dict[str, Any]] = Field(alias="структуры")
-    sides: dict[str, dict[str, Any]] = Field(alias="стороны")
-    other_findings: list[str] = Field(alias="прочие_находки")
-    conclusion: str | None = Field(alias="заключение")
-    recommendations: str | None = Field(alias="рекомендации")
+    text: str | None
+    recommendations: str | None
 
 
 class ExtractResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    findings: list[FindingResponse]
-    structured_data: StructuredReportResponse
+    structures: list[StructureResponse]
+    technical_data: dict[str, Any]
+    conclusion: ConclusionResponse
 
 
 def get_parser(request: Request) -> ClinicalDescriptionParser:
@@ -95,8 +93,7 @@ def create_app(
     application = FastAPI(
         title="Sparrow Clinical Findings API",
         description=(
-            "Извлечение фрагментов клинических описаний с эвристической "
-            "классификацией статуса и срочности."
+            "Структурирование медицинских протоколов для клиентского интерфейса."
         ),
         version="0.1.0",
         lifespan=lifespan,
@@ -105,7 +102,7 @@ def create_app(
     @application.post(
         "/extract",
         response_model=ExtractResponse,
-        summary="Извлечь находки из описания",
+        summary="Структурировать медицинский протокол",
     )
     def extract(
         body: ExtractRequest,
@@ -116,13 +113,8 @@ def create_app(
             ClinicalStructureParser, Depends(get_structure_parser)
         ],
     ) -> dict[str, Any]:
-        structured_data, clinical_text = report_parser.parse_with_clinical_text(
-            body.text
-        )
-        return {
-            **clinical_parser.parse(clinical_text),
-            "structured_data": structured_data,
-        }
+        report = report_parser.parse(body.text)
+        return to_frontend_schema(report, clinical_parser)
 
     return application
 

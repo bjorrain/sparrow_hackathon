@@ -69,11 +69,16 @@ _STATUS_TERMS: dict[FindingStatus, tuple[str, ...]] = {
         "диффузный",
         "очаговый",
         "смещенный",
+        "извитый",
+        "извиты",
+        "извитость",
         "отклонение",
     ),
     "норма": (
         "нормальный",
         "обычный",
+        "типичный",
+        "симметричный",
         "ровный",
         "четкий",
         "однородный",
@@ -195,6 +200,18 @@ class ClinicalDescriptionParser:
             })
         return {"findings": findings}
 
+    def classify_status(self, description: str) -> FindingStatus | None:
+        """Return a recognized status, or None when rules find no evidence."""
+        if not isinstance(description, str):
+            raise TypeError("description должен быть строкой")
+        lemmas = self._lemmatize(description)
+        if not lemmas:
+            return None
+        status, rule = self._classify_status(lemmas)
+        if rule == "описанный_фрагмент_без_совпадения_с_правилами":
+            return None
+        return status
+
     def _lemmatize(self, text: str) -> list[str]:
         normalized = _SPACE.sub(" ", text.lower().replace("ё", "е")).strip()
         if not normalized:
@@ -238,6 +255,7 @@ class ClinicalDescriptionParser:
             "определить",
             "определяться",
             "визуализировать",
+            "визуализироваться",
             "лоцироваться",
         }
         for index in range(len(lemmas) - len(phrase) + 1):

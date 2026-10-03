@@ -36,6 +36,23 @@ _PROSTATE_ENTITY_LINES = (
     ),
 )
 _SIDE_HEADING = re.compile(r"^(справа|слева)\s*:\s*$", re.IGNORECASE)
+_TECHNICAL_HEADER = re.compile(
+    r"^(ультразвуковая\s+диагностическая\s+система)\s*:?\s*$",
+    re.IGNORECASE,
+)
+_INLINE_DIMENSIONS = re.compile(
+    r"^(?P<label>длинник|поперечник|квр|вр|площадь|головка|тело|хвост)"
+    r"\s*:?\s*(?P<value>\d[\d.,]*\s*(?:кв\.?\s*см|мм|см(?:2|²|3|³)?|мл|м))"
+    r"(?:\s*,\s*(?P<second_label>длинник|поперечник|квр|вр|площадь|"
+    r"головка|тело|хвост)\s*:?\s*"
+    r"(?P<second_value>\d[\d.,]*\s*(?:кв\.?\s*см|мм|см(?:2|²|3|³)?|мл|м)))?$",
+    re.IGNORECASE,
+)
+_DASHED_PROPERTY = re.compile(
+    r"^(?P<label>.+?)\s*[-–—]\s*(?P<property>толщина|диаметр)\s*:\s*"
+    r"(?P<value>.+)$",
+    re.IGNORECASE,
+)
 _INDEPENDENT_FINDING = re.compile(
     r"^(?:в\s+(?:позадиматочном|дугласовом)\s+пространстве|"
     r"свободная\s+жидкость)\b",
@@ -211,8 +228,8 @@ def _is_section_heading(line: str) -> bool:
         and clean == clean.upper()
         and any(character.isalpha() for character in clean)
     )
-    colon_heading = line.rstrip().endswith(":") and _key(clean) not in _FIELD_LABELS
-    return all_caps_heading or colon_heading
+    empty_colon_heading = bool(re.fullmatch(r"\s*[^:]{1,80}:\s*", line))
+    return all_caps_heading or empty_colon_heading
 
 
 class ClinicalStructureParser:
@@ -257,6 +274,7 @@ class ClinicalStructureParser:
         current_structure: dict[str, object] | None = None
         pending_property: str | None = None
         current_side: dict[str, object] | None = None
+        pending_technical_header = False
         clinical_fragments: list[str] = []
         section = "preamble" if has_description_heading else "description"
         for raw_line in text.splitlines():
@@ -289,6 +307,11 @@ class ClinicalStructureParser:
                 if value:
                     self._append_section(result, "заключение", value)
                 continue
+            technical_header = _TECHNICAL_HEADER.fullmatch(line)
+            if technical_header:
+                metadata["тип_оборудования"] = _clean(technical_header.group(1))
+                pending_technical_header = True
+                continue
             if _RECOMMENDATION_HEADING.match(line):
                 match = _RECOMMENDATION_HEADING.match(line)
                 assert match is not None
@@ -304,6 +327,11 @@ class ClinicalStructureParser:
                 continue
             if section == "recommendations":
                 self._append_section(result, "рекомендации", line)
+                continue
+
+            if pending_technical_header and current_structure is None:
+                metadata["оборудование"] = line
+                pending_technical_header = False
                 continue
 
             metadata_key = self._metadata_key(line)
@@ -409,6 +437,54 @@ class ClinicalStructureParser:
     def _parse_structure_line(
         self, structure: dict[str, object], line: str
     ) -> str | None:
+        dashed_property = _DASHED_PROPERTY.fullmatch(line)
+        if dashed_property:
+            key = _key(f"{dashed_property.group('label')}_{dashed_property.group('property')}")
+            _add_value(structure, key, _clean(dashed_property.group("value")))
+            return None
+
+        dimensions = _INLINE_DIMENSIONS.fullmatch(line)
+        if dimensions:
+            _add_value(
+                structure,
+                _key(dimensions.group("label")),
+                _clean(dimensions.group("value")),
+            )
+            if dimensions.group("second_label"):
+                _add_value(
+                    structure,
+                    _key(dimensions.group("second_label")),
+                    _clean(dimensions.group("second_value")),
+                )
+            return None
+
+        parts = self._split_labeled_clauses(line)
+        if len(parts) > 1:
+            findings = [
+                finding
+                for part in parts
+                if (finding := self._parse_structure_line(structure, part.strip()))
+            ]
+            return "\n".join(findings) or None
+
+        inline_measurement = re.match(
+            r"^(?P<label>.+?)\s*:\s*(?P<value>.+?),\s*"
+            r"(?P<secondary>толщина|диаметр|длинник|поперечник)\s+"
+            r"(?P<secondary_value>\d[\d.,]*\s*(?:мм|см|мл))$",
+            line,
+            re.IGNORECASE,
+        )
+        if inline_measurement:
+            label = _key(inline_measurement.group("label"))
+            first_value = _clean(inline_measurement.group("value"))
+            _add_value(structure, label, first_value)
+            _add_value(
+                structure,
+                _key(f"{label}_{inline_measurement.group('secondary')}"),
+                _clean(inline_measurement.group("secondary_value")),
+            )
+            return None
+
         for pattern, structure_name in _PROSTATE_ENTITY_LINES:
             match = pattern.match(line)
             if match:
@@ -422,8 +498,14 @@ class ClinicalStructureParser:
 
         field = _FIELD.match(line)
         if field and len(field.group(1).split()) <= 6:
-            label = _key(field.group(1))
+            raw_label = _clean(field.group(1))
+            label = _key(raw_label)
             value = _clean(field.group(2))
+            thickness_suffix = re.fullmatch(
+                r"(?P<parent>.+?)\s*[-–—]\s*толщина", raw_label, re.I
+            )
+            if thickness_suffix:
+                label = _key(f"{thickness_suffix.group('parent')}_толщина")
             if _clean(field.group(1)).casefold().startswith("при исследовании "):
                 self._append_list(structure, "наблюдения", line)
                 return line
@@ -451,6 +533,9 @@ class ClinicalStructureParser:
                     self._append_list(structure, label, value)
                     return value
                 if label == "образование":
+                    self._append_list(structure, "образования", value)
+                    return value
+                if label == "образования" and self._is_positive_formation(value):
                     self._append_list(structure, "образования", value)
                     return value
                 if label == "объем":
@@ -561,6 +646,20 @@ class ClinicalStructureParser:
         )
 
     @staticmethod
+    def _split_labeled_clauses(line: str) -> list[str]:
+        parts = []
+        start = 0
+        for match in re.finditer(r",\s*(?=[^,:\n]{1,60}:\s*)", line):
+            if ":" not in line[start : match.start()]:
+                continue
+            parts.append(line[start : match.start()].strip())
+            start = match.start() + 1
+        if parts:
+            parts.append(line[start:].strip())
+            return parts
+        return [line]
+
+    @staticmethod
     def _is_clinical_statement(text: str) -> bool:
         return bool(
             re.search(
@@ -626,6 +725,10 @@ class ClinicalStructureParser:
 
     @staticmethod
     def _append_list(target: dict[str, object], key: str, value: str) -> None:
-        current = target.setdefault(key, [])
-        assert isinstance(current, list)
-        current.append(value)
+        current = target.get(key)
+        if current is None:
+            target[key] = [value]
+        elif isinstance(current, list):
+            current.append(value)
+        else:
+            target[key] = [current, value]

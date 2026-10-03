@@ -14,36 +14,59 @@ class ClinicalExtractionApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = self.enterContext(TestClient(create_app(self.parser)))
 
-    def test_extract_returns_classified_findings(self) -> None:
+    def test_extract_returns_frontend_schema_with_per_structure_status(self) -> None:
         response = self.client.post(
             "/extract",
-            json={"text": "Артерия проходима. Выявлена киста."},
+            json={
+                "text": (
+                    "Описание\n"
+                    "ПЕЧЕНЬ\n"
+                    "Размеры: 145 мм\n"
+                    "Структура паренхимы: однородная\n"
+                    "Толщина стенок: симметричная\n"
+                    "ЖЕЛЧНЫЙ ПУЗЫРЬ\n"
+                    "Выявлена киста 12 мм\n"
+                    "ЗАКЛЮЧЕНИЕ: Простая киста печени\n"
+                    "Рекомендовано: контрольное УЗИ"
+                )
+            },
         )
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
+        self.assertEqual(set(body), {"structures", "technical_data", "conclusion"})
         self.assertEqual(
-            [finding["status"] for finding in body["findings"]],
-            ["норма", "патология"],
+            set(body["structures"][0]),
+            {"name", "size", "morphology", "status"},
         )
         self.assertEqual(
-            [finding["urgency"] for finding in body["findings"]],
-            ["норма", "планово"],
+            body["structures"][0],
+            {
+                "name": "печень",
+                "size": "145 мм",
+                "morphology": {
+                    "структура_паренхимы": "однородная",
+                    "толщина_стенок": "симметричная",
+                },
+                "status": "норма",
+            },
         )
         self.assertEqual(
-            body["findings"][1]["summary"],
-            "Выявлена киста",
+            body["structures"][1]["status"],
+            "патология",
         )
         self.assertEqual(
-            set(body["findings"][1]),
-            {"summary", "status", "urgency"},
+            body["structures"][1]["name"],
+            "желчный пузырь",
         )
-        self.assertNotIn("lemmas", body["findings"][1])
-        self.assertNotIn("status_rule", body["findings"][1])
-        self.assertNotIn("urgency_rule", body["findings"][1])
-        self.assertIn("structured_data", body)
-        self.assertEqual(body["structured_data"]["структуры"], {})
-        self.assertEqual(body["structured_data"]["стороны"], {})
+        self.assertEqual(
+            body["conclusion"],
+            {
+                "text": "Простая киста печени",
+                "recommendations": "контрольное УЗИ",
+            },
+        )
+        self.assertEqual(body["technical_data"], {})
 
     def test_extract_includes_structured_organ_fields(self) -> None:
         response = self.client.post(
@@ -60,15 +83,17 @@ class ClinicalExtractionApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        structured_data = response.json()["structured_data"]
+        body = response.json()
         self.assertEqual(
-            structured_data["служебная_информация"]["аппарат"],
+            body["technical_data"]["аппарат"],
             "ACUSON",
         )
         self.assertEqual(
-            structured_data["структуры"]["матка"]["размеры"],
-            "72х59х64 мм",
+            body["structures"][0]["name"],
+            "матка",
         )
+        uterus = next(item for item in body["structures"] if item["name"] == "матка")
+        self.assertEqual(uterus["size"], "72х59х64 мм")
 
     def test_extract_does_not_return_fragment_title_or_study_type_as_findings(
         self,
@@ -80,20 +105,21 @@ class ClinicalExtractionApiTests(unittest.TestCase):
                     "Описание\n"
                     "УЛЬТРАЗВУКОВОЕ ИССЛЕДОВАНИЕ ОРГАНОВ МАЛОГО ТАЗА\n"
                     "МАТКА\n"
-                    "Размеры: 72х59х64 мм\n"
+                    "Размеры: 72х59х64 мм, правильной формы\n"
                     "Достоверно узловых образований не определяется"
                 )
             },
         )
 
         body = response.json()
-        finding_text = "\n".join(
-            item["summary"] for item in body["findings"]
-        ).lower()
-        self.assertNotIn("описание", finding_text)
-        self.assertNotIn("ультразвуковое исследование", finding_text)
+        structure_names = " ".join(item["name"] for item in body["structures"]).lower()
+        self.assertNotIn("описание", structure_names)
+        self.assertNotIn("ультразвуковое исследование", structure_names)
+        uterus = next(item for item in body["structures"] if item["name"] == "матка")
+        self.assertEqual(uterus["size"], "72х59х64 мм")
+        self.assertEqual(uterus["morphology"]["форма"], "правильной формы")
         self.assertEqual(
-            body["structured_data"]["служебная_информация"]["тип_исследования"],
+            body["technical_data"]["тип_исследования"],
             "УЛЬТРАЗВУКОВОЕ ИССЛЕДОВАНИЕ ОРГАНОВ МАЛОГО ТАЗА",
         )
 
@@ -111,14 +137,42 @@ class ClinicalExtractionApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        findings = response.json()["findings"]
         self.assertEqual(
-            [finding["summary"] for finding in findings],
-            ["Структуры не изменены"],
+            response.json()["structures"][0]["status"],
+            "норма",
         )
+
+    def test_extract_does_not_mark_negated_formation_as_pathology(self) -> None:
+        response = self.client.post(
+            "/extract",
+            json={
+                "text": (
+                    "Описание\n"
+                    "ШЕЙКА МАТКИ\n"
+                    "В ее проекции дополнительных образований не визуализируется"
+                )
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["structures"][0]["status"], "норма")
+
+    def test_extract_maps_explicit_change_to_suspicion(self) -> None:
+        response = self.client.post(
+            "/extract",
+            json={
+                "text": (
+                    "Описание\n"
+                    "ВЕНЫ\n"
+                    "Умеренно извиты"
+                )
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(
-            [finding["status"] for finding in findings],
-            ["норма"],
+            response.json()["structures"][0]["status"],
+            "подозрение",
         )
 
     def test_extract_groups_vascular_measurements_by_side_and_vessel(self) -> None:
@@ -133,17 +187,19 @@ class ClinicalExtractionApiTests(unittest.TestCase):
             },
         )
 
-        structured = response.json()["structured_data"]
+        body = response.json()
+        right_side = next(
+            item for item in body["structures"] if item["name"] == "ОБА справа"
+        )
+        left_side = next(
+            item for item in body["structures"] if item["name"] == "ОБА слева"
+        )
         self.assertEqual(
-            structured["стороны"]["справа"]["сосуды"]["ОБА"]["измерения"][
-                "Vps"
-            ]["значение"],
+            right_side["morphology"]["измерения"]["Vps"]["значение"],
             "87 см/сек",
         )
         self.assertEqual(
-            structured["стороны"]["слева"]["сосуды"]["ОБА"]["измерения"][
-                "Vps"
-            ]["значение"],
+            left_side["morphology"]["измерения"]["Vps"]["значение"],
             "109 см/сек",
         )
 
