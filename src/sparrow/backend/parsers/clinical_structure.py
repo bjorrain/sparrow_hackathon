@@ -4,13 +4,25 @@ from __future__ import annotations
 
 import re
 
+from yargy import Parser
+from yargy.pipelines import morph_pipeline
+
 _SPACE = re.compile(r"\s+")
 _FIELD = re.compile(r"^([^:]{1,80}):\s*(.*)$")
+_SIDE_HEADING = re.compile(r"^(справа|слева)\s*:\s*$", re.IGNORECASE)
+_VESSEL_MEASUREMENT = re.compile(
+    r"^\s*(?P<metric>Vps|Vpd|Vmean|RI|PI)\s*[–—-]?\s*"
+    r"(?P<value>\d+(?:[.,]\d+)?)\s*"
+    r"(?P<unit>см\s*/\s*сек|см\s*/\s*с|м\s*/\s*с)?"
+    r"(?P<reference>.*)$",
+    re.IGNORECASE,
+)
 _METADATA = (
     (
         "аппарат",
         re.compile(
-            r"^(?:исследование\s+проводилось\s+на\s+)?аппарате?\s*:?\s*(.+)$",
+            r"^(?:исследование\s+(?:проводилось|выполнено)\s+на\s+)?"
+            r"аппарате?\s*:?\s*(.+)$",
             re.IGNORECASE,
         ),
     ),
@@ -32,8 +44,10 @@ _METADATA = (
     ),
 )
 _STUDY_TITLE = re.compile(
-    r"\b(?:ультразвуков\w*|узи\b|уз-исследован\w*|"
-    r"дуплексн\w*\s+сканирован\w*|эхографическ\w*\s+исследован\w*)",
+    r"(?:^\s*(?:исследован\w*|протокол)\b|"
+    r"\b(?:ультразвуков\w*|узи\b|уздг\b|уздс\b|уз-исследован\w*|"
+    r"допплер\w*|дуплексн\w*\s+(?:сканирован\w*|исследован\w*)|"
+    r"сканирован\w*|эхографическ\w*\s+исследован\w*))",
     re.IGNORECASE,
 )
 _DESCRIPTION_HEADING = re.compile(r"^описание\s*:?\s*$", re.IGNORECASE)
@@ -70,18 +84,68 @@ _LATERALITY_PREFIX = re.compile(
     re.IGNORECASE,
 )
 _KEYWORD_LABELS = {
-    "в положении": "положение",
+    "в_положении": "положение",
     "положение": "положение",
-    "положен": "положение",
     "расположение": "расположение",
     "расположен": "расположение",
     "объем": "объем",
-    "объём": "объем",
 }
+_FIELD_LABELS = {
+    "размер",
+    "размеры",
+    "объем",
+    "контуры",
+    "положение",
+    "расположение",
+    "толщина",
+    "длина",
+    "ширина",
+    "высота",
+    "эхоструктура",
+    "структура",
+    "строма",
+    "фолликулярный аппарат",
+    "фаллопиева труба",
+    "цервикальный канал",
+    "эндоцервикс",
+    "базальный контур",
+    "кровоток",
+    "эхогенность",
+    "состояние",
+    "просвет",
+    "стенки",
+}
+_SERVICE_LABELS = {
+    "оборудование": "оборудование",
+    "модель аппарата": "аппарат",
+    "датчик": "датчик",
+    "уз датчик": "датчик",
+    "врач": "врач",
+    "пол": "пол",
+    "пациент": "пациент",
+    "пациентка": "пациент",
+    "дата рождения": "дата_рождения",
+    "номер карты": "номер_карты",
+    "частота": "частота",
+}
+_VESSEL_NAMES = {
+    "оба": "ОБА",
+    "пба": "ПБА",
+    "гба": "ГБА",
+    "пка": "ПкА",
+    "збба": "ЗББА",
+    "пбба": "ПББА",
+    "тас": "ТАС",
+    "опа": "ОПА",
+    "нпа": "НПА",
+}
+_VESSEL_PARSER = Parser(
+    morph_pipeline(list(_VESSEL_NAMES.keys()))
+)
 
 
 def _clean(value: str) -> str:
-    return _SPACE.sub(" ", value).strip(" \t:;.")
+    return _SPACE.sub(" ", value).strip(" \t;.")
 
 
 def _key(value: str) -> str:
@@ -106,12 +170,14 @@ def _add_value(target: dict[str, object], key: str, value: str) -> None:
 
 def _is_section_heading(line: str) -> bool:
     clean = _clean(line).rstrip(":").strip()
-    return (
+    all_caps_heading = (
         len(clean) <= 80
         and not re.search(r"[.!?,;]", clean)
         and clean == clean.upper()
         and any(character.isalpha() for character in clean)
     )
+    colon_heading = line.rstrip().endswith(":") and _key(clean) not in _FIELD_LABELS
+    return all_caps_heading or colon_heading
 
 
 class ClinicalStructureParser:
@@ -130,23 +196,33 @@ class ClinicalStructureParser:
         result: dict[str, object] = {
             "служебная_информация": {},
             "структуры": {},
+            "стороны": {},
             "прочие_находки": [],
             "заключение": None,
             "рекомендации": None,
         }
         metadata = result["служебная_информация"]
         structures = result["структуры"]
+        sides = result["стороны"]
         other_findings = result["прочие_находки"]
         assert isinstance(metadata, dict)
         assert isinstance(structures, dict)
+        assert isinstance(sides, dict)
         assert isinstance(other_findings, list)
 
+        has_description_heading = any(
+            _DESCRIPTION_HEADING.fullmatch(_clean(line))
+            for line in text.splitlines()
+        )
         current_structure: dict[str, object] | None = None
+        current_side: dict[str, object] | None = None
         clinical_fragments: list[str] = []
-        section = "preamble"
+        section = "preamble" if has_description_heading else "description"
         for raw_line in text.splitlines():
             line = _clean(raw_line)
             if not line:
+                if section == "description" and current_side is None:
+                    current_structure = None
                 continue
             if _DESCRIPTION_HEADING.fullmatch(line):
                 section = "description"
@@ -156,6 +232,7 @@ class ClinicalStructureParser:
                 assert match is not None
                 section = "conclusion"
                 current_structure = None
+                current_side = None
                 value = _clean(match.group(1))
                 if value:
                     self._append_section(result, "заключение", value)
@@ -165,6 +242,7 @@ class ClinicalStructureParser:
                 assert match is not None
                 section = "recommendations"
                 current_structure = None
+                current_side = None
                 value = _clean(match.group(1))
                 if value:
                     self._append_section(result, "рекомендации", value)
@@ -181,18 +259,44 @@ class ClinicalStructureParser:
                 _add_value(metadata, *metadata_key)
                 continue
 
-            if section == "description" and "тип_исследования" not in metadata:
+            if "тип_исследования" not in metadata:
                 if _STUDY_TITLE.search(line):
                     metadata["тип_исследования"] = line
                     continue
 
             if section == "preamble":
+                generic_metadata = self._generic_metadata(line)
+                if generic_metadata:
+                    _add_value(metadata, *generic_metadata)
                 continue
+            side_heading = _SIDE_HEADING.fullmatch(line)
+            if side_heading:
+                side_name = side_heading.group(1).casefold()
+                current_side = sides.setdefault(side_name, {})
+                assert isinstance(current_side, dict)
+                current_structure = None
+                continue
+
+            if current_side is not None:
+                vessel_line = self._parse_vessel_measurement(current_side, line)
+                if vessel_line is not None:
+                    clinical_fragments.append(vessel_line)
+                else:
+                    self._append_list(current_side, "наблюдения", line)
+                    clinical_fragments.append(line)
+                continue
+
             if _is_section_heading(line):
                 structure_name = _key(line.rstrip(":"))
                 current_structure = structures.setdefault(structure_name, {})
                 assert isinstance(current_structure, dict)
                 continue
+
+            if section != "preamble" and current_structure is None:
+                generic_metadata = self._generic_metadata(line)
+                if generic_metadata:
+                    _add_value(metadata, *generic_metadata)
+                    continue
 
             if current_structure is None:
                 other_findings.append(line)
@@ -214,6 +318,18 @@ class ClinicalStructureParser:
         return None
 
     @staticmethod
+    def _generic_metadata(line: str) -> tuple[str, str] | None:
+        field = _FIELD.match(line)
+        if not field or len(field.group(1).split()) > 6:
+            return None
+        label = _clean(field.group(1)).casefold().replace("ё", "е")
+        output_key = _SERVICE_LABELS.get(label)
+        if not output_key:
+            return None
+        value = _clean(field.group(2))
+        return (output_key, value) if value else None
+
+    @staticmethod
     def _append_section(result: dict[str, object], key: str, value: str) -> None:
         current = result[key]
         result[key] = f"{current}\n{value}" if current else value
@@ -222,11 +338,19 @@ class ClinicalStructureParser:
         self, structure: dict[str, object], line: str
     ) -> str | None:
         field = _FIELD.match(line)
-        if field and len(field.group(1).split()) <= 6:
+        if (
+            field
+            and len(field.group(1).split()) <= 6
+            and not re.search(r"[.!?]", field.group(1))
+        ):
             label = _key(field.group(1))
             value = _clean(field.group(2))
             if value:
-                _add_value(structure, label, value)
+                if label == "образование":
+                    self._append_list(structure, "образования", value)
+                    return value
+                else:
+                    _add_value(structure, label, value)
                 if self._is_positive_formation(value):
                     self._append_list(structure, "образования", value)
                     return value
@@ -244,6 +368,38 @@ class ClinicalStructureParser:
             return line
 
         self._append_list(structure, "наблюдения", line)
+        return line
+
+    @staticmethod
+    def _parse_vessel_measurement(
+        side: dict[str, object], line: str
+    ) -> str | None:
+        abbreviations = list(_VESSEL_PARSER.findall(line))
+        if len(abbreviations) != 1:
+            return None
+        start, end = abbreviations[0].span
+        abbreviation = _key(line[start:end])
+        vessel_name = _VESSEL_NAMES.get(abbreviation)
+        if vessel_name is None:
+            return None
+        metric = _VESSEL_MEASUREMENT.match(line[end:])
+        if not metric:
+            return None
+
+        vessels = side.setdefault("сосуды", {})
+        assert isinstance(vessels, dict)
+        vessel = vessels.setdefault(vessel_name, {})
+        assert isinstance(vessel, dict)
+        measurements = vessel.setdefault("измерения", {})
+        assert isinstance(measurements, dict)
+
+        value: dict[str, str] = {
+            "значение": _clean(f"{metric.group('value')} {metric.group('unit') or ''}")
+        }
+        reference = _clean(metric.group("reference"))
+        if reference:
+            value["референс"] = reference.strip("()")
+        _add_value(measurements, metric.group("metric"), value)
         return line
 
     @staticmethod

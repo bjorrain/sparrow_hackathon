@@ -45,13 +45,13 @@ class ClinicalDescriptionParserTests(unittest.TestCase):
         finding = parser.parse("Немедленная консультация.")["findings"][0]
 
         self.assertEqual(finding["urgency"], "срочно")
-        self.assertEqual(finding["urgency_rule"], "немедленная консультация")
+        self.assertEqual(finding["summary"], "Немедленная консультация.")
 
     def test_keeps_laterality_with_finding_and_handles_negated_change(self) -> None:
         result = self.parser.parse("СПРАВА:\nОтклонений от нормы не выявлено.")
 
         self.assertEqual(len(result["findings"]), 1)
-        self.assertTrue(result["findings"][0]["text"].startswith("СПРАВА"))
+        self.assertTrue(result["findings"][0]["summary"].startswith("СПРАВА"))
         self.assertEqual(result["findings"][0]["status"], "норма")
 
     def test_reference_range_does_not_by_itself_imply_normality(self) -> None:
@@ -59,15 +59,32 @@ class ClinicalDescriptionParserTests(unittest.TestCase):
 
         finding = result["findings"][0]
         self.assertEqual(finding["status"], "изменение")
-        self.assertEqual(
-            finding["status_rule"],
-            "описанный_фрагмент_без_совпадения_с_правилами",
-        )
+        self.assertEqual(finding["summary"], "Vps 109 см/сек (норма 55-103).")
 
     def test_negated_urgency_does_not_raise_urgency_level(self) -> None:
         finding = self.parser.parse("Не срочно требуется консультация.")["findings"][0]
 
         self.assertEqual(finding["urgency"], "планово")
+
+    def test_negated_changes_are_classified_as_normal(self) -> None:
+        phrases = (
+            "Структуры не изменены.",
+            "Объем не увеличен.",
+            "Мелкая протоковая система не расширена.",
+            "Стенки пузырьков не утолщены.",
+            "Без локальных и диффузных изменений васкуляризации.",
+        )
+
+        for phrase in phrases:
+            with self.subTest(phrase=phrase):
+                finding = self.parser.parse(phrase)["findings"][0]
+                self.assertEqual(finding["status"], "норма")
+
+    def test_positive_change_is_still_classified_as_change(self) -> None:
+        for phrase in ("Структуры изменены.", "Объем увеличен."):
+            with self.subTest(phrase=phrase):
+                finding = self.parser.parse(phrase)["findings"][0]
+                self.assertEqual(finding["status"], "изменение")
 
     def test_rejects_unknown_urgency_category(self) -> None:
         with self.assertRaises(ValueError):

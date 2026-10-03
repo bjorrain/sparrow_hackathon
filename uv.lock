@@ -541,6 +541,7 @@ dependencies = [
     { name = "requests" },
     { name = "setuptools" },
     { name = "uvicorn" },
+    { name = "yargy" },
 ]
 
 [package.dev-dependencies]
@@ -555,6 +556,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.34.2" },
     { name = "setuptools", specifier = "<81" },
     { name = "uvicorn", specifier = ">=0.30.0,<1.0.0" },
+    { name = "yargy", specifier = ">=0.16.0,<1.0.0" },
 ]
 
 [package.metadata.requires-dev]

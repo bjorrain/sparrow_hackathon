@@ -44,17 +44,28 @@ _STATUS_TERMS: dict[FindingStatus, tuple[str, ...]] = {
     ),
     "изменение": (
         "изменение",
+        "изменить",
         "увеличенный",
+        "увеличить",
         "уменьшенный",
+        "уменьшить",
         "расширенный",
+        "расширить",
         "утолщенный",
+        "утолстить",
         "истонченный",
+        "истоншить",
         "повышенный",
+        "повысить",
         "сниженный",
+        "снизить",
         "неоднородный",
         "уплотненный",
+        "уплотнить",
         "деформированный",
+        "деформировать",
         "нарушенный",
+        "нарушить",
         "диффузный",
         "очаговый",
         "смещенный",
@@ -168,15 +179,12 @@ class ClinicalDescriptionParser:
             lemmas = self._lemmatize(clause)
             if not lemmas:
                 continue
-            status, status_rule = self._classify_status(lemmas)
-            urgency, urgency_rule = self._classify_urgency(lemmas, status)
+            status, _ = self._classify_status(lemmas)
+            urgency, _ = self._classify_urgency(lemmas, status)
             findings.append({
-                "text": clause,
-                "lemmas": lemmas,
+                "summary": clause,
                 "status": status,
-                "status_rule": status_rule,
                 "urgency": urgency,
-                "urgency_rule": urgency_rule,
             })
         return {"findings": findings}
 
@@ -232,8 +240,10 @@ class ClinicalDescriptionParser:
             after = lemmas[index + len(phrase) : index + len(phrase) + 5]
             if any(
                 token in {"без", "отсутствовать", "отсутствие", "нет"}
-                for token in before[-2:]
+                for token in before
             ):
+                return True
+            if before and before[-1] in {"не", "ни"}:
                 return True
             if any(
                 token in {"отсутствовать", "отсутствие", "нет"} for token in after[:2]

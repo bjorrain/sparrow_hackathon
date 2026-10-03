@@ -31,19 +31,17 @@ class ExtractRequest(BaseModel):
 class FindingResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    text: str
-    lemmas: list[str]
+    summary: str
     status: Status
-    status_rule: str
     urgency: Urgency
-    urgency_rule: str
 
 
 class StructuredReportResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     service_info: dict[str, Any] = Field(alias="служебная_информация")
-    organs: dict[str, dict[str, Any]] = Field(alias="органы")
+    structures: dict[str, dict[str, Any]] = Field(alias="структуры")
+    sides: dict[str, dict[str, Any]] = Field(alias="стороны")
     other_findings: list[str] = Field(alias="прочие_находки")
     conclusion: str | None = Field(alias="заключение")
     recommendations: str | None = Field(alias="рекомендации")
@@ -118,9 +116,12 @@ def create_app(
             ClinicalStructureParser, Depends(get_structure_parser)
         ],
     ) -> dict[str, Any]:
+        structured_data, clinical_text = report_parser.parse_with_clinical_text(
+            body.text
+        )
         return {
-            **clinical_parser.parse(body.text),
-            "structured_data": report_parser.parse(body.text),
+            **clinical_parser.parse(clinical_text),
+            "structured_data": structured_data,
         }
 
     return application

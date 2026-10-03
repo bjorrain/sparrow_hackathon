@@ -17,9 +17,13 @@ class ClinicalStructureParserTests(unittest.TestCase):
 Размеры:72х59х64 мм
 Толщина стенок матки симметричная
 Достоверно узловых и очаговых образований не определяется
+При исследовании в режиме ЦДК - кровоток не усилен
+Полость матки не деформирована,не расширена
 ПРАВЫЙ ЯИЧНИК
 Размеры: 24х13х16 мм
+Расположен типично.
 Праровариально лоцируется анэхогенное однородное образование с четкими ровными контурами: 12х11мм (киста)
+
 В позадиматочном пространстве свободной жидкости не определяется.
 ЗАКЛЮЧЕНИЕ: УЗ-признаки параовариальной кисты справа.
 Рекомендовано: консультация гинеколога."""
@@ -36,23 +40,34 @@ class ClinicalStructureParserTests(unittest.TestCase):
                 "дата_последней_менструации": "29.07.2026",
             },
         )
-        organs = result["органы"]
-        self.assertEqual(organs["матка"]["размеры"], "72х59х64 мм")
+        structures = result["структуры"]
+        self.assertEqual(structures["матка"]["размеры"], "72х59х64 мм")
         self.assertEqual(
-            organs["матка"]["толщина_стенок_матки"],
+            structures["матка"]["толщина_стенок_матки"],
             "симметричная",
         )
         self.assertEqual(
-            organs["матка"]["образования"],
-            ["Достоверно узловых и очаговых образований не определяется"],
+            structures["матка"]["наблюдения"],
+            [
+                "Достоверно узловых и очаговых образований не определяется",
+                "При исследовании в режиме ЦДК - кровоток не усилен",
+                "Полость матки не деформирована,не расширена",
+            ],
         )
-        self.assertEqual(organs["правый_яичник"]["размеры"], "24х13х16 мм")
         self.assertEqual(
-            organs["правый_яичник"]["образования"],
+            structures["правый_яичник"]["размеры"],
+            "24х13х16 мм",
+        )
+        self.assertEqual(
+            structures["правый_яичник"]["образования"],
             [
                 "Праровариально лоцируется анэхогенное однородное образование "
                 "с четкими ровными контурами: 12х11мм (киста)"
             ],
+        )
+        self.assertEqual(
+            structures["правый_яичник"]["расположение"],
+            "типично",
         )
         self.assertEqual(
             result["прочие_находки"],
@@ -68,11 +83,124 @@ class ClinicalStructureParserTests(unittest.TestCase):
         result = self.parser.parse("Описание\nМАТКА\nКонтуры: ровные")
 
         self.assertEqual(
-            result["органы"],
+            result["структуры"],
             {"матка": {"контуры": "ровные"}},
         )
         self.assertIsNone(result["заключение"])
         self.assertIsNone(result["рекомендации"])
+
+    def test_extracts_unknown_anatomical_sections_dynamically(self) -> None:
+        result = self.parser.parse(
+            "Описание\n"
+            "УЛЬТРАЗВУКОВОЕ ИССЛЕДОВАНИЕ\n"
+            "ПЕЧЕНЬ\n"
+            "Размеры: 145 мм\n"
+            "МОЧЕВОЙ ПУЗЫРЬ\n"
+            "Стенки: не утолщены"
+        )
+
+        self.assertEqual(
+            result["структуры"],
+            {
+                "печень": {"размеры": "145 мм"},
+                "мочевой_пузырь": {"стенки": "не утолщены"},
+            },
+        )
+
+    def test_extracts_title_case_structure_and_arbitrary_labeled_fields(self) -> None:
+        result = self.parser.parse(
+            "Описание\n"
+            "Протокол ультразвукового исследования\n"
+            "Магистральные сосуды:\n"
+            "Диаметр сосуда: 5 мм"
+        )
+
+        self.assertEqual(
+            result["структуры"],
+            {"магистральные_сосуды": {"диаметр_сосуда": "5 мм"}},
+        )
+
+    def test_keeps_study_title_before_description_in_metadata(self) -> None:
+        result = self.parser.parse(
+            "Исследование щитовидной железы\n"
+            "Описание\n"
+            "ЩИТОВИДНАЯ ЖЕЛЕЗА\n"
+            "Объем: 10 мл"
+        )
+
+        self.assertEqual(
+            result["служебная_информация"]["тип_исследования"],
+            "Исследование щитовидной железы",
+        )
+        self.assertEqual(
+            result["структуры"],
+            {"щитовидная_железа": {"объем": "10 мл"}},
+        )
+
+    def test_extracts_service_fields_without_misclassifying_free_findings(self) -> None:
+        result = self.parser.parse(
+            "Описание\n"
+            "УЗИ почек\n"
+            "Датчик: 10L4\n"
+            "Свободная жидкость: не определяется"
+        )
+
+        self.assertEqual(
+            result["служебная_информация"],
+            {"тип_исследования": "УЗИ почек", "датчик": "10L4"},
+        )
+        self.assertEqual(
+            result["прочие_находки"],
+            ["Свободная жидкость: не определяется"],
+        )
+
+    def test_skips_fragment_title_and_study_type_in_clinical_text(self) -> None:
+        _, clinical_text = self.parser.parse_with_clinical_text(
+            "Описание\n"
+            "УЛЬТРАЗВУКОВОЕ ИССЛЕДОВАНИЕ ОРГАНОВ МАЛОГО ТАЗА\n"
+            "МАТКА\n"
+            "Достоверно узловых образований не определяется"
+        )
+
+        self.assertNotIn("Описание", clinical_text)
+        self.assertNotIn("УЛЬТРАЗВУКОВОЕ ИССЛЕДОВАНИЕ", clinical_text)
+        self.assertIn("узловых образований", clinical_text)
+
+    def test_groups_vessel_measurements_by_side_and_yargy_vessel_match(self) -> None:
+        result = self.parser.parse(
+            "Описание\n"
+            "СПРАВА:\n"
+            "Артерии осмотрены, проходимы.\n"
+            "ОБА Vps – 87 см/сек (норма 55-103, 90-145)\n"
+            "\n"
+            "ПБА Vps – 76 см/сек (норма 51-77, 70-110)\n"
+            "СЛЕВА:\n"
+            "ОБА Vps – 109 см/сек (норма 55-103, 90-145)"
+        )
+
+        sides = result["стороны"]
+        self.assertEqual(
+            sides["справа"]["сосуды"]["ОБА"]["измерения"]["Vps"],
+            {
+                "значение": "87 см/сек",
+                "референс": "норма 55-103, 90-145",
+            },
+        )
+        self.assertEqual(
+            sides["справа"]["сосуды"]["ПБА"]["измерения"]["Vps"],
+            {
+                "значение": "76 см/сек",
+                "референс": "норма 51-77, 70-110",
+            },
+        )
+        self.assertEqual(
+            sides["слева"]["сосуды"]["ОБА"]["измерения"]["Vps"]["значение"],
+            "109 см/сек",
+        )
+        self.assertEqual(
+            sides["справа"]["наблюдения"],
+            ["Артерии осмотрены, проходимы"],
+        )
 
 
 if __name__ == "__main__":
