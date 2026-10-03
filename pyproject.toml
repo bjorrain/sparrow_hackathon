@@ -1,0 +1,25 @@
+[project]
+name = "sparrow"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115.0,<1.0.0",
+    "natasha>=1.6.0,<2.0.0",
+    "requests>=2.34.2",
+    "setuptools<81",
+    "uvicorn>=0.30.0,<1.0.0",
+]
+
+[project.scripts]
+sparrow = "sparrow:main"
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.13.1",
+]
