@@ -23,7 +23,9 @@ _PROSTATE_ENTITY_LINES = (
         "простатическая_часть_уретры",
     ),
     (
-        re.compile(r"^уретральный\s+канал\s+и\s+шейка\s+мочевого\s+пузыря\s*(.*)$", re.I),
+        re.compile(
+            r"^уретральный\s+канал\s+и\s+шейка\s+мочевого\s+пузыря\s*(.*)$", re.I
+        ),
         "уретральный_канал_и_шейка_мочевого_пузыря",
     ),
     (
@@ -191,9 +193,7 @@ _VESSEL_NAMES = {
     "опа": "ОПА",
     "нпа": "НПА",
 }
-_VESSEL_PARSER = Parser(
-    morph_pipeline(list(_VESSEL_NAMES.keys()))
-)
+_VESSEL_PARSER = Parser(morph_pipeline(list(_VESSEL_NAMES.keys())))
 
 
 def _clean(value: str) -> str:
@@ -239,9 +239,7 @@ class ClinicalStructureParser:
         structured, _ = self.parse_with_clinical_text(text)
         return structured
 
-    def parse_with_clinical_text(
-        self, text: str
-    ) -> tuple[dict[str, object], str]:
+    def parse_with_clinical_text(self, text: str) -> tuple[dict[str, object], str]:
         if not isinstance(text, str):
             raise TypeError("text должен быть строкой")
 
@@ -263,13 +261,10 @@ class ClinicalStructureParser:
         assert isinstance(other_findings, list)
 
         has_description_heading = any(
-            _DESCRIPTION_HEADING.fullmatch(_clean(line))
-            for line in text.splitlines()
+            _DESCRIPTION_HEADING.fullmatch(_clean(line)) for line in text.splitlines()
         )
         inferred_primary = (
-            "предстательная_железа"
-            if _PROSTATE_ANCHOR.search(text)
-            else None
+            "предстательная_железа" if _PROSTATE_ANCHOR.search(text) else None
         )
         current_structure: dict[str, object] | None = None
         pending_property: str | None = None
@@ -439,7 +434,9 @@ class ClinicalStructureParser:
     ) -> str | None:
         dashed_property = _DASHED_PROPERTY.fullmatch(line)
         if dashed_property:
-            key = _key(f"{dashed_property.group('label')}_{dashed_property.group('property')}")
+            key = _key(
+                f"{dashed_property.group('label')}_{dashed_property.group('property')}"
+            )
             _add_value(structure, key, _clean(dashed_property.group("value")))
             return None
 
@@ -592,9 +589,7 @@ class ClinicalStructureParser:
     def _is_zone_description(line: str) -> bool:
         return bool(re.match(r"^[-•]?\s*в\s+.+?\s+зонах?\s*[–—-]", line, re.I))
 
-    def _record_entity_text(
-        self, entity: dict[str, object], text: str
-    ) -> list[str]:
+    def _record_entity_text(self, entity: dict[str, object], text: str) -> list[str]:
         clinical_findings = []
         clauses = [part.strip() for part in re.split(r"[;,]", text) if part.strip()]
         for clause in clauses:
@@ -630,7 +625,9 @@ class ClinicalStructureParser:
     @staticmethod
     def _is_empty_label(line: str, label: str) -> bool:
         match = _FIELD.match(line)
-        return bool(match and _key(match.group(1)) == label and not _clean(match.group(2)))
+        return bool(
+            match and _key(match.group(1)) == label and not _clean(match.group(2))
+        )
 
     @staticmethod
     def _starts_new_structure_field(line: str) -> bool:
@@ -641,9 +638,7 @@ class ClinicalStructureParser:
             return True
         if _PROPERTY_PREFIX.match(line):
             return True
-        return bool(
-            re.match(r"^(?:размеры|размер|объем|объём)\s+.+$", line, re.I)
-        )
+        return bool(re.match(r"^(?:размеры|размер|объем|объём)\s+.+$", line, re.I))
 
     @staticmethod
     def _split_labeled_clauses(line: str) -> list[str]:
@@ -688,9 +683,7 @@ class ClinicalStructureParser:
         return parsed_value
 
     @staticmethod
-    def _parse_vessel_measurement(
-        side: dict[str, object], line: str
-    ) -> str | None:
+    def _parse_vessel_measurement(side: dict[str, object], line: str) -> str | None:
         abbreviations = list(_VESSEL_PARSER.findall(line))
         if len(abbreviations) != 1:
             return None
@@ -721,7 +714,9 @@ class ClinicalStructureParser:
 
     @staticmethod
     def _is_positive_formation(text: str) -> bool:
-        return bool(_FORMATION.search(text)) and not bool(_NEGATED_FORMATION.search(text))
+        return bool(_FORMATION.search(text)) and not bool(
+            _NEGATED_FORMATION.search(text)
+        )
 
     @staticmethod
     def _append_list(target: dict[str, object], key: str, value: str) -> None:
